@@ -45,6 +45,15 @@ from larch.wxlib import (LarchFrame, FloatSpin, EditableListBox,
 
 from larch.xrd import CifStructure, get_amcsd, find_cifs, get_cif, parse_cif_file
 
+from matplotlib.backends.backend_wxagg import FigureCanvasWxAgg as FigureCanvas
+from matplotlib.figure import Figure
+import numpy as np
+import matplotlib
+import re
+import matplotlib.patches as mpatches
+matplotlib.use("WXAgg")
+import matplotlib.colors as mcolors
+
 LEFT = wx.ALIGN_LEFT
 CEN |=  wx.ALL
 FNB_STYLE = fnb.FNB_NO_X_BUTTON|fnb.FNB_SMART_TABS
@@ -317,9 +326,29 @@ class CIFFrame(wx.Frame):
         cif_sizer.Add(wids['cif_text'], 0, LEFT, 1)
         pack(cif_panel, cif_sizer)
 
+        plot3d_layout = wx.BoxSizer(wx.HORIZONTAL)
+        self.panel3d = wx.Panel(rightpanel)
+
+        fig3d = Figure()
+        self.ax3d = fig3d.add_subplot(projection="3d")
+        self.ax3d.axis("off")
+        self.canvas = FigureCanvas(self.panel3d, -1, fig3d)
+        self.plot_toggle = wx.CheckBox(self.panel3d)
+
+        self.panel3d.SetMinSize((250, 250))
+        self.panel3d.SetMaxSize((675, 400))
+        self.panel3d.onPanelExposed = self.showCif3D
+        plot3d_layout.Add(self.canvas)
+        plot3d_layout.Add(self.plot_toggle)
+        
+        self.plot_toggle.Bind(wx.EVT_CHECKBOX, self.toggle3DPlot)
+
+        self.panel3d.SetSizer(plot3d_layout)
+
         self.nbpages = []
         for label, page in (('CIF Text',  cif_panel),
                             ('1-D XRD Pattern', self.plotpanel),
+                            ("CIF Plotter", self.panel3d)
                             ):
             self.nb.AddPage(page, label, True)
             self.nbpages.append((label, page))
@@ -454,6 +483,7 @@ class CIFFrame(wx.Frame):
         self.current_cif = cif
         self.has_xrd1d = False
         self.wids['cif_text'].SetValue(cif.ciftext)
+        self.plot_toggle.SetValue(False)
 
         if self.with_feff:
             elems =  chemparse(cif.formula.replace(' ', ''))
@@ -800,6 +830,107 @@ class CIFFrame(wx.Frame):
 #         self.xrd1d_thread.start()
 #         time.sleep(0.25)
 #         self.xrd1d_thread.join()
+
+    def line_hover(self, event):
+        for line in self.ax3d.get_lines():
+            if line.contains(event)[0]:
+                label_text = line.get_label()
+                xyz = np.array(line.get_data_3d())
+                xyz = [float(i) for i in xyz]
+                self.atom_txt.set_text(s=label_text)
+                self.atom_txt.set_position_3d(xyz)
+                self.canvas.draw_idle()
+
+    def showCif3D(self, event=None, cif_id =None):
+        cif = self.current_cif
+        cmap = list(mcolors.TABLEAU_COLORS)
+
+        if cif is not None:
+            x,y,z = cif.atoms_x, cif.atoms_y, cif.atoms_z
+            keys = [re.findall("[A-Z][a-z]?", i) for i in cif.atoms_sites]
+            keys = [k[0] for k in keys]
+            keys = np.unique(keys)
+            cmap_effective = cmap[:len(keys)]
+
+            self.ax3d.clear()
+            self.ax3d.axis("off")
+            #need to add (xyz) quivers?
+            self.ax3d.set_title(f"{self.cif_label} CIF")
+
+            for i in range(len(x)):
+                atom_label = re.findall("[A-Z][a-z]?", cif.atoms_sites[i])
+                colour_index = list(keys).index(atom_label[0])
+
+                self.ax3d.plot(x[i], y[i], z[i], "o",fillstyle="full",markerfacecolor=cmap[colour_index],
+                                                        markeredgecolor="black",ms=8,label=atom_label[0])
+
+            colourlist = zip(keys, cmap_effective)
+
+            handles = [mpatches.Patch(color = colour, label = label) for label, colour in colourlist]
+            labels = keys
+            self.ax3d.legend(handles, labels)
+
+            self.atom_txt = self.ax3d.text3D(0, 0, 0, s="")
+            self.canvas.mpl_connect('motion_notify_event', self.line_hover)
+            self.canvas.draw_idle()
+        
+    def parse_fefftext(self, text):
+        f1 = text.split("ATOMS")[1]
+        f2 = f1.split("END")[0]
+        f3 = f2.split("\n")
+        info = f3[2:-2]
+        atoms = re.findall("[A-Z][a-z]?[^_]", str(info))
+        atoms = [(x.replace("'","")).replace(" ","") for x in atoms]
+        atoms_list_enum = [a if not (s:=sum(j==a for j in atoms[:i])) else f"{a}{s+1}" for i,a in enumerate(atoms)]
+        coords = np.array(re.findall("-?[0-9].\d{4}", str(info)))
+        coords = [float(i) for i in coords]
+        split_coords = np.array_split(coords, len(atoms), axis=0)
+
+        return split_coords, atoms_list_enum
+
+    def showInp3D(self, event=None):
+        cmap = list(mcolors.TABLEAU_COLORS)
+        if self.wids["feff_text"] is not None:
+            fefftext = self.wids["feff_text"].GetValue()
+            if len(fefftext) > 100:
+                split_coords, atoms_list_enum = self.parse_fefftext(fefftext)
+                
+                keys = re.findall("[A-Z][a-z]?", str(atoms_list_enum))
+                keys = [k[0] for k in keys]
+                keys = np.unique(keys)
+                cmap_effective = cmap[:len(keys)]
+
+                self.ax3d.clear()
+                self.ax3d.set_title(f"{self.cif_label} INP")
+                for i in range(len(split_coords)):
+                    try:
+                        s = split_coords[i]
+                        atom_label = re.findall("[A-Z][a-z]?",atoms_list_enum[i])[0]
+                        colour_index = list(keys).index(atom_label[0])
+                        self.ax3d.plot(s[0],s[1],s[2], "o",fillstyle="full",markerfacecolor=cmap[colour_index],
+                                                                markeredgecolor="black",ms=8,label=atom_label)
+                    except:
+                        continue
+
+                colourlist = zip(keys, cmap_effective)
+
+                handles = [mpatches.Patch(color = colour, label = label) for label, colour in colourlist]
+                labels = keys
+                self.ax3d.legend(handles, labels)
+
+                self.ax3d.axis("off")
+                self.atom_txt = self.ax3d.text3D(0, 0, 0, s="")
+                self.canvas.mpl_connect('motion_notify_event', self.line_hover)
+                self.canvas.draw_idle()
+
+
+    def toggle3DPlot(self, event):
+        toggle_state = event.GetEventObject().GetValue()
+        if toggle_state == True:
+            self.showInp3D()
+        else:
+            self.showCif3D()
+
 
 
     def onSelAll(self, event=None):
