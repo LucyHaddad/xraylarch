@@ -23,6 +23,15 @@ from .wxcolors import GUI_COLORS
 from larch.xafs import get_feff_pathinfo
 from larch.utils.physical_constants import ATOM_SYMS
 
+from matplotlib.backends.backend_wxagg import FigureCanvasWxAgg as FigureCanvas
+from matplotlib.figure import Figure
+import numpy as np
+import matplotlib
+import re
+import matplotlib.patches as mpatches
+matplotlib.use("WXAgg")
+import matplotlib.colors as mcolors
+
 ATSYMS = ['< All Atoms>'] + ATOM_SYMS[:96]
 EDGES  = ['< All Edges>', 'K', 'L3', 'L2', 'L1', 'M5']
 
@@ -166,10 +175,13 @@ class FeffResultsPanel(wx.Panel):
 
         sizer = wx.GridBagSizer(1, 1)
 
-        bkws = dict(size=(175, -1))
+        bkws = dict(size=(200, -1))
+        bkws2 = dict(size=(80,-1)) #making "plot paths" button smaller
+
         btn_header = Button(panel, "Show Full Header", action=self.onShowHeader, **bkws)
         btn_feffinp = Button(panel, "Show Feff.inp",   action=self.onShowFeffInp, **bkws)
         btn_geom = Button(panel, "Show Path Geometries", action=self.onShowGeom, **bkws)
+        plot_path = Button(panel, "Plot Paths", action=self.onPlotPaths, **bkws2)
 
         if callable(self.path_importer):
             btn_import = Button(panel, "Import Paths",     action=self.onImportPath, **bkws)
@@ -217,6 +229,7 @@ class FeffResultsPanel(wx.Panel):
         sizer.Add(btn_header,      (ir, 0), (1, 2),  LEFT, 2)
         sizer.Add(btn_feffinp,     (ir, 2), (1, 2),  LEFT, 2)
         sizer.Add(btn_geom,        (ir, 4), (1, 2),  LEFT, 2)
+        sizer.Add(plot_path,       (ir, 6), (1, 1),  LEFT, 2)
 
         if callable(self.path_importer):
             ir += 1
@@ -351,6 +364,14 @@ class FeffResultsPanel(wx.Panel):
                         break
 
         self.onSelNone()
+    
+    def onPlotPaths(self, event=None):
+        for data in self.model.data:
+            if data[5]:
+                feffpath = f"{self.feffresult.folder:s}/{data[0]:s}"
+                print(feffpath)
+        win2 = Frame3D(self)
+        win2.Show()
 
 
     def set_feffresult(self, feffresult):
@@ -576,6 +597,103 @@ class FeffResultsFrame(wx.Frame):
 
     def onClose(self, event=None):
         self.Destroy()
+
+
+
+class Frame3D(wx.Frame):
+    def __init__(self,  parent=None):
+        wx.Frame.__init__(self, parent, -1, size=(600, 400), style=FRAMESTYLE)
+        self.SetTitle("FEFF Plot")
+        self.parent = parent
+
+        self.init_layout()
+        self.plot_inp()
+        
+    
+    def init_layout(self):
+        self.figure = Figure()
+        self.ax3d = self.figure.add_subplot(projection="3d")
+        self.ax3d.axis("off")
+
+        self.canvas = FigureCanvas(self, -1, self.figure)
+
+        layout = wx.BoxSizer(wx.HORIZONTAL)
+        layout.Add(self.canvas)
+        self.SetSizer(layout)
+
+    def parse_fefftext(self, text):
+        ftext = (text.split("ATOMS")[1]).split("END")[0]
+        ftext = ftext.split("\n")
+
+        coords_idx, atoms_idx = ftext[1].index("ipot"), ftext[1].index("tag")
+        ftext_coords, ftext_atoms = [l[:coords_idx] for l in ftext], [l[atoms_idx:atoms_idx+3] for l in ftext]
+        coords_info = ftext_coords[2:-2]
+        atoms_info = ftext_atoms[2:-2]
+
+        atoms = re.findall("[A-Z][a-z]?[^_]", str(atoms_info))
+        atoms = [(x.replace("'","")).replace(" ","") for x in atoms]
+        atoms_list_enum = [a if not (s:=sum(j==a for j in atoms[:i])) else f"{a}{s+1}" for i,a in enumerate(atoms)]
+
+        coords = np.array(re.findall("-?[0-9].\d{4}", str(coords_info)))
+        coords = [float(i) for i in coords]
+        split_coords = np.array_split(coords, len(atoms), axis=0)
+        return split_coords, atoms_list_enum
+
+    def plot_inp(self):
+        inp_path = f"{self.parent.feffresult.folder}/feff.inp"
+        title = (str(self.parent.feffresult.folder).split("/feff")[1])[1:]
+
+        with open(inp_path) as f:
+            text = f.read()
+        split_coords, atoms_list_enum = self.parse_fefftext(text)
+
+        cmap = list(mcolors.TABLEAU_COLORS)
+
+        keys = re.findall("[A-Z][a-z]?", str(atoms_list_enum))
+        keys = np.unique(keys)
+        cmap_effective = cmap[:len(keys)]
+
+        self.ax3d.clear()
+        self.ax3d.set_title(title)
+        for i in range(len(split_coords)):
+            try:
+                s = split_coords[i]
+                atom_label = re.findall("[A-Z][a-z]?",atoms_list_enum[i])[0]
+                colour_index = list(keys).index(atom_label)
+
+                if np.all(s == 0):
+                    self.ax3d.plot(s[0],s[1],s[2], "o", fillstyle="full", markerfacecolor="w",
+                                            markeredgecolor="black", ms=12, label=atom_label)
+                else:
+                    self.ax3d.plot(s[0],s[1],s[2], "o",fillstyle="full",markerfacecolor=cmap[colour_index],
+                                            markeredgecolor="black",ms=8,label=atom_label)
+            except:
+                continue
+
+        colourlist = zip(keys, cmap_effective)
+
+        handles = [mpatches.Patch(color = colour, label = label) for label, colour in colourlist]
+        labels = keys
+        self.ax3d.legend(handles, labels)
+
+        self.ax3d.axis("off")
+        self.atom_txt = self.ax3d.text3D(0, 0, 0, s="")
+        self.canvas.mpl_connect('motion_notify_event', self.line_hover)
+        self.canvas.draw_idle()
+
+    def line_hover(self, event):
+        for line in self.ax3d.get_lines():
+            if line.contains(event)[0]:
+                label_text = line.get_label()
+                xyz = np.array(line.get_data_3d())
+                xyz = [float(i) for i in xyz]
+                self.atom_txt.set_text(s=label_text)
+                self.atom_txt.set_position_3d(xyz)
+                self.canvas.draw_idle()
+        
+
+
+
 
 
 class FeffResultsBrowserApp(LarchWxApp):

@@ -367,7 +367,7 @@ class Structure2FeffFrame(wx.Frame):
 
         cc = self.current_structure
         fname = cc["fname"]
-        wildcard = f'Sturcture files (*.{cc["fmt"]})|*.{cc["fmt"]}|All files (*.*)|*.*'
+        wildcard = f'Structure files (*.{cc["fmt"]})|*.{cc["fmt"]}|All files (*.*)|*.*'
         path = FileSave(self, message='Save Structure File',
                         wildcard=wildcard,
                         default_file=fname)

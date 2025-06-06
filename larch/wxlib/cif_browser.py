@@ -587,6 +587,7 @@ class CIFFrame(wx.Frame):
         fefftext = cif2feffinp(cif.ciftext, catom, edge=edge, cluster_size=csize,
                                absorber_site=site_index, version8=version8,
                                with_h=with_h, extra_titles=etitles)
+        self.plot_toggle.SetValue(False)
         # hack for larixite 2024.10.0,
         # but also, here we really want to force the print and control flags
         flines = fefftext.split('\n')
@@ -667,6 +668,8 @@ class CIFFrame(wx.Frame):
         self.feffresults.set_feffresult(this_feffrun)
         ix, p = self.get_nbpage('Feff Results')
         self.nb.SetSelection(ix)
+
+        #print(os.listdir(folder)) where all the path info will be stored.........
 
         # clean up unused, intermediate Feff files
         for fname in os.listdir(folder):
@@ -875,28 +878,32 @@ class CIFFrame(wx.Frame):
             self.canvas.draw_idle()
         
     def parse_fefftext(self, text):
-        f1 = text.split("ATOMS")[1]
-        f2 = f1.split("END")[0]
-        f3 = f2.split("\n")
-        info = f3[2:-2]
-        atoms = re.findall("[A-Z][a-z]?[^_]", str(info))
+        ftext = (text.split("ATOMS")[1]).split("END")[0]
+        ftext = ftext.split("\n")
+
+        coords_idx, atoms_idx = ftext[1].index("ipot"), ftext[1].index("tag")
+        ftext_coords, ftext_atoms = [l[:coords_idx] for l in ftext], [l[atoms_idx:atoms_idx+3] for l in ftext]
+        coords_info = ftext_coords[2:-2]
+        atoms_info = ftext_atoms[2:-2]
+
+        atoms = re.findall("[A-Z][a-z]?[^_]", str(atoms_info))
         atoms = [(x.replace("'","")).replace(" ","") for x in atoms]
         atoms_list_enum = [a if not (s:=sum(j==a for j in atoms[:i])) else f"{a}{s+1}" for i,a in enumerate(atoms)]
-        coords = np.array(re.findall("-?[0-9].\d{4}", str(info)))
+
+        coords = np.array(re.findall("-?[0-9].\d{4}", str(coords_info)))
         coords = [float(i) for i in coords]
         split_coords = np.array_split(coords, len(atoms), axis=0)
-
         return split_coords, atoms_list_enum
 
     def showInp3D(self, event=None):
         cmap = list(mcolors.TABLEAU_COLORS)
         if self.wids["feff_text"] is not None:
             fefftext = self.wids["feff_text"].GetValue()
+
             if len(fefftext) > 100:
                 split_coords, atoms_list_enum = self.parse_fefftext(fefftext)
                 
                 keys = re.findall("[A-Z][a-z]?", str(atoms_list_enum))
-                keys = [k[0] for k in keys]
                 keys = np.unique(keys)
                 cmap_effective = cmap[:len(keys)]
 
@@ -905,9 +912,14 @@ class CIFFrame(wx.Frame):
                 for i in range(len(split_coords)):
                     try:
                         s = split_coords[i]
+                
                         atom_label = re.findall("[A-Z][a-z]?",atoms_list_enum[i])[0]
-                        colour_index = list(keys).index(atom_label[0])
-                        self.ax3d.plot(s[0],s[1],s[2], "o",fillstyle="full",markerfacecolor=cmap[colour_index],
+                        colour_index = list(keys).index(atom_label)
+                        if np.all(s == 0):
+                            self.ax3d.plot(s[0],s[1],s[2], "o", fillstyle="full", markerfacecolor="w",
+                                                                    markeredgecolor="black", ms=12, label=atom_label)
+                        else:
+                            self.ax3d.plot(s[0],s[1],s[2], "o",fillstyle="full",markerfacecolor=cmap[colour_index],
                                                                 markeredgecolor="black",ms=8,label=atom_label)
                     except:
                         continue
@@ -926,10 +938,13 @@ class CIFFrame(wx.Frame):
 
     def toggle3DPlot(self, event):
         toggle_state = event.GetEventObject().GetValue()
-        if toggle_state == True:
-            self.showInp3D()
+        if self.feffresults.feffresult is None:
+            if toggle_state == True:
+                self.showInp3D()
+            else:
+                self.showCif3D()
         else:
-            self.showCif3D()
+            self.showInp3D()
 
 
 
