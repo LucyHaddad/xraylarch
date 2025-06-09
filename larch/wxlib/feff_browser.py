@@ -31,6 +31,10 @@ import re
 import matplotlib.patches as mpatches
 matplotlib.use("WXAgg")
 import matplotlib.colors as mcolors
+from mpl_toolkits.mplot3d.axes3d import Axes3D
+from mpl_toolkits.mplot3d.proj3d import proj_transform
+from .feffplot import Structure3D
+import matplotlib as mpl
 
 ATSYMS = ['< All Atoms>'] + ATOM_SYMS[:96]
 EDGES  = ['< All Edges>', 'K', 'L3', 'L2', 'L1', 'M5']
@@ -38,6 +42,44 @@ EDGES  = ['< All Edges>', 'K', 'L3', 'L2', 'L1', 'M5']
 
 LEFT = LEFT|wx.ALL
 DVSTYLE = dv.DV_VERT_RULES|dv.DV_ROW_LINES|dv.DV_MULTIPLE
+
+class Arrow3D(mpatches.FancyArrowPatch):
+    """""
+    for 3D arrow in feffplots
+    """""
+    #fancy arrow from: https://gist.github.com/WetHat/1d6cd0f7309535311a539b42cccca89c -modifying to work with new canvas
+    def __init__(self, x, y, z, dx, dy, dz, *args, **kwargs):
+        super().__init__((0, 0), (0, 0), *args, **kwargs)
+        self._xyz = (x, y, z)
+        self._dxdydz = (dx, dy, dz)
+
+    def draw(self, renderer):
+        x1, y1, z1 = self._xyz
+        dx, dy, dz = self._dxdydz
+        x2, y2, z2 = (x1 + dx, y1 + dy, z1 + dz)
+
+        xs, ys, zs = proj_transform((x1, x2), (y1, y2), (z1, z2), self.axes.M)
+        self.set_positions((xs[0], ys[0]), (xs[1], ys[1]))
+        super().draw(renderer)
+        
+    def do_3d_projection(self, renderer=None):
+        x1, y1, z1 = self._xyz
+        dx, dy, dz = self._dxdydz
+        x2, y2, z2 = (x1 + dx, y1 + dy, z1 + dz)
+
+        xs, ys, zs = proj_transform((x1, x2), (y1, y2), (z1, z2), self.axes.M)
+        self.set_positions((xs[0], ys[0]), (xs[1], ys[1]))
+
+        return np.min(zs)
+
+    def _arrow3D(ax, x, y, z, dx, dy, dz, *args, **kwargs):
+        '''Add an 3d arrow to an `Axes3D` instance.'''
+
+        arrow = Arrow3D(x, y, z, dx, dy, dz, *args, **kwargs)
+        ax.add_artist(arrow)
+
+
+    setattr(Axes3D, 'arrow3D', _arrow3D)
 
 class FeffPathsModel(dv.DataViewIndexListModel):
     def __init__(self, feffpaths, with_use=True):
@@ -366,10 +408,12 @@ class FeffResultsPanel(wx.Panel):
         self.onSelNone()
     
     def onPlotPaths(self, event=None):
+        self.relevant_paths = []
         for data in self.model.data:
             if data[5]:
                 feffpath = f"{self.feffresult.folder:s}/{data[0]:s}"
-                print(feffpath)
+                self.relevant_paths.append(data[0])
+                #add path plotter for multiple path selections
         win2 = Frame3D(self)
         win2.Show()
 
@@ -608,6 +652,7 @@ class Frame3D(wx.Frame):
 
         self.init_layout()
         self.plot_inp()
+        self.plot_scatter()
         
     
     def init_layout(self):
@@ -621,56 +666,31 @@ class Frame3D(wx.Frame):
         layout.Add(self.canvas)
         self.SetSizer(layout)
 
-    def parse_fefftext(self, text):
-        ftext = (text.split("ATOMS")[1]).split("END")[0]
-        ftext = ftext.split("\n")
-
-        coords_idx, atoms_idx = ftext[1].index("ipot"), ftext[1].index("tag")
-        ftext_coords, ftext_atoms = [l[:coords_idx] for l in ftext], [l[atoms_idx:atoms_idx+3] for l in ftext]
-        coords_info = ftext_coords[2:-2]
-        atoms_info = ftext_atoms[2:-2]
-
-        atoms = re.findall("[A-Z][a-z]?[^_]", str(atoms_info))
-        atoms = [(x.replace("'","")).replace(" ","") for x in atoms]
-        atoms_list_enum = [a if not (s:=sum(j==a for j in atoms[:i])) else f"{a}{s+1}" for i,a in enumerate(atoms)]
-
-        coords = np.array(re.findall("-?[0-9].\d{4}", str(coords_info)))
-        coords = [float(i) for i in coords]
-        split_coords = np.array_split(coords, len(atoms), axis=0)
-        return split_coords, atoms_list_enum
-
     def plot_inp(self):
-        inp_path = f"{self.parent.feffresult.folder}/feff.inp"
+        self.structure3D = Structure3D(self.parent.feffresult.folder)
+        data3D = self.structure3D.inp_data
+
         title = (str(self.parent.feffresult.folder).split("/feff")[1])[1:]
 
-        with open(inp_path) as f:
-            text = f.read()
-        split_coords, atoms_list_enum = self.parse_fefftext(text)
-
         cmap = list(mcolors.TABLEAU_COLORS)
-
-        keys = re.findall("[A-Z][a-z]?", str(atoms_list_enum))
-        keys = np.unique(keys)
+        keys = self.structure3D.keys
         cmap_effective = cmap[:len(keys)]
+        colourlist = zip(keys, cmap_effective)
 
         self.ax3d.clear()
         self.ax3d.set_title(title)
-        for i in range(len(split_coords)):
-            try:
-                s = split_coords[i]
-                atom_label = re.findall("[A-Z][a-z]?",atoms_list_enum[i])[0]
-                colour_index = list(keys).index(atom_label)
+        for key, value in data3D.items():
+            a = data3D[key]
+            atom_label = re.findall("[A-Z][a-z]?", key)[0]
 
-                if np.all(s == 0):
-                    self.ax3d.plot(s[0],s[1],s[2], "o", fillstyle="full", markerfacecolor="w",
-                                            markeredgecolor="black", ms=12, label=atom_label)
-                else:
-                    self.ax3d.plot(s[0],s[1],s[2], "o",fillstyle="full",markerfacecolor=cmap[colour_index],
-                                            markeredgecolor="black",ms=8,label=atom_label)
-            except:
-                continue
+            colour_index = list(keys).index(atom_label)
 
-        colourlist = zip(keys, cmap_effective)
+            if np.all(a==0):
+                self.ax3d.plot(a[0],a[1],a[2], "o", fillstyle="full", markerfacecolor="w",
+                                                    markeredgecolor="black", ms=12, label=atom_label)
+            else:
+                self.ax3d.plot(a[0],a[1],a[2], "o", fillstyle="full", markerfacecolor=cmap[colour_index],
+                                                    markeredgecolor="black", ms=8, label=atom_label)
 
         handles = [mpatches.Patch(color = colour, label = label) for label, colour in colourlist]
         labels = keys
@@ -691,7 +711,22 @@ class Frame3D(wx.Frame):
                 self.atom_txt.set_position_3d(xyz)
                 self.canvas.draw_idle()
         
-
+    def plot_scatter(self):
+        cmap = mpl.colormaps['Set1']
+        colors = cmap(np.linspace(0, 1, 10))
+        for p in range(len(self.parent.relevant_paths)):
+            path = self.parent.relevant_paths[p]
+            coords_tmp = self.structure3D.get_arrow_vectors(path)
+            scattering_coords = self.structure3D.get_scattering_atoms(path)
+            k=0
+            for i in range(len(scattering_coords.keys())):
+                atom = list(scattering_coords.keys())[i]
+                x,y,z,dx,dy,dz = [x for x in coords_tmp[k:k+6]]
+                self.ax3d.arrow3D(x, y, z, dx, dy, dz,
+                                  mutation_scale=10, fc=colors[p])
+                k+=6
+                self.canvas.draw_idle()
+                #add legend for arrows?
 
 
 
