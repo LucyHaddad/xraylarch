@@ -47,7 +47,8 @@ class Arrow3D(mpatches.FancyArrowPatch):
     """""
     for 3D arrow in feffplots
     """""
-    #fancy arrow from: https://gist.github.com/WetHat/1d6cd0f7309535311a539b42cccca89c -modifying to work with new canvas
+    #fancy arrow from: https://gist.github.com/WetHat/1d6cd0f7309535311a539b42cccca89c
+    #add the Annotate3D from here too for path annotation options
     def __init__(self, x, y, z, dx, dy, dz, *args, **kwargs):
         super().__init__((0, 0), (0, 0), *args, **kwargs)
         self._xyz = (x, y, z)
@@ -413,7 +414,6 @@ class FeffResultsPanel(wx.Panel):
             if data[5]:
                 feffpath = f"{self.feffresult.folder:s}/{data[0]:s}"
                 self.relevant_paths.append(data[0])
-                #add path plotter for multiple path selections
         win2 = Frame3D(self)
         win2.Show()
 
@@ -653,7 +653,6 @@ class Frame3D(wx.Frame):
         self.init_layout()
         self.plot_inp()
         self.plot_scatter()
-        
     
     def init_layout(self):
         self.figure = Figure()
@@ -663,8 +662,9 @@ class Frame3D(wx.Frame):
         self.canvas = FigureCanvas(self, -1, self.figure)
 
         layout = wx.BoxSizer(wx.HORIZONTAL)
-        layout.Add(self.canvas)
+        layout.Add(self.canvas,1 , wx.GROW)
         self.SetSizer(layout)
+        self.Fit()
 
     def plot_inp(self):
         self.structure3D = Structure3D(self.parent.feffresult.folder)
@@ -723,11 +723,11 @@ class Frame3D(wx.Frame):
                 atom = list(scattering_coords.keys())[i]
                 x,y,z,dx,dy,dz = [x for x in coords_tmp[k:k+6]]
                 self.ax3d.arrow3D(x, y, z, dx, dy, dz,
-                                  mutation_scale=10, fc=colors[p])
+                                  mutation_scale=10, fc=colors[p], label="test")
                 k+=6
-                self.canvas.draw_idle()
-                #add legend for arrows?
-
+        #self.canvas.draw_idle()
+                #add legend for arrows?-- add new axes over the top of previous ones and legend for those?
+                #or add new (invisible) points for each arrow with their own interactive annotations?
 
 
 
