@@ -79,6 +79,8 @@ class Arrow3D(mpatches.FancyArrowPatch):
         arrow = Arrow3D(x, y, z, dx, dy, dz, *args, **kwargs)
         ax.add_artist(arrow)
 
+    def _get_arrows(self):
+        return self._arrow3D
 
     setattr(Axes3D, 'arrow3D', _arrow3D)
 
@@ -409,11 +411,11 @@ class FeffResultsPanel(wx.Panel):
         self.onSelNone()
     
     def onPlotPaths(self, event=None):
-        self.relevant_paths = []
+        self.relevant_paths = {}
         for data in self.model.data:
             if data[5]:
                 feffpath = f"{self.feffresult.folder:s}/{data[0]:s}"
-                self.relevant_paths.append(data[0])
+                self.relevant_paths[data[6]] = data[0]
         win2 = Frame3D(self)
         win2.Show()
 
@@ -662,7 +664,7 @@ class Frame3D(wx.Frame):
         self.canvas = FigureCanvas(self, -1, self.figure)
 
         layout = wx.BoxSizer(wx.HORIZONTAL)
-        layout.Add(self.canvas,1 , wx.GROW)
+        layout.Add(self.canvas, 1, wx.GROW)
         self.SetSizer(layout)
         self.Fit()
 
@@ -712,23 +714,54 @@ class Frame3D(wx.Frame):
                 self.canvas.draw_idle()
         
     def plot_scatter(self):
-        cmap = mpl.colormaps['Set1']
-        colors = cmap(np.linspace(0, 1, 10))
-        for p in range(len(self.parent.relevant_paths)):
-            path = self.parent.relevant_paths[p]
+        
+        path_cmap = mpl.colormaps['Set1']
+        self.path_colors = path_cmap(np.linspace(0, 1, 10))
+        self.pathlist = list(self.parent.relevant_paths.keys())
+
+        for key, value in self.parent.relevant_paths.items():
+            label = key
+            path = self.parent.relevant_paths[key]
+
+            p = self.pathlist.index(key)
+
             coords_tmp = self.structure3D.get_arrow_vectors(path)
             scattering_coords = self.structure3D.get_scattering_atoms(path)
+
             k=0
             for i in range(len(scattering_coords.keys())):
+
                 atom = list(scattering_coords.keys())[i]
+
                 x,y,z,dx,dy,dz = [x for x in coords_tmp[k:k+6]]
                 self.ax3d.arrow3D(x, y, z, dx, dy, dz,
-                                  mutation_scale=10, fc=colors[p], label="test")
-                k+=6
-        #self.canvas.draw_idle()
-                #add legend for arrows?-- add new axes over the top of previous ones and legend for those?
-                #or add new (invisible) points for each arrow with their own interactive annotations?
+                                  mutation_scale=15, fc=self.path_colors[p], label=f"{label}", picker=True)
 
+                k+=6
+
+        self.path_txt = self.ax3d.text3D(0, 0, 0, s="")
+
+        self.canvas.mpl_connect('pick_event', self.display_path_details)
+        self.canvas.draw_idle()
+
+    def display_path_details(self, event):
+        
+        if type(event.artist) == Arrow3D:
+            p = self.pathlist.index(event.artist._label)
+            original_col = self.path_colors[p]
+            
+            current_col = event.artist._facecolor
+
+            if np.array(current_col).all() == np.array(original_col).all():
+                event.artist.set_facecolor("black")
+
+                self.path_txt.set_text(s=event.artist._label)
+                self.path_txt.set_position_3d(event.artist._xyz)
+            else:
+                event.artist.set_facecolor(original_col)
+                self.path_txt.set_text("")
+            
+            self.canvas.draw_idle()
 
 
 class FeffResultsBrowserApp(LarchWxApp):
